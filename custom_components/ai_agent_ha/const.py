@@ -12,12 +12,20 @@ CONF_OPENROUTER_TOKEN = "openrouter_token"  # nosec B105
 CONF_ANTHROPIC_TOKEN = "anthropic_token"  # nosec B105
 CONF_LOCAL_URL = "local_url"
 CONF_LOCAL_MODEL = "local_model"
+CONF_LMSTUDIO_TOKEN = "lmstudio_token"  # nosec B105
 
 # Available AI providers
-AI_PROVIDERS = ["llama", "openai", "gemini", "openrouter", "anthropic", "local"]
+AI_PROVIDERS = ["llama", "openai", "gemini", "openrouter", "anthropic", "local", "lmstudio"]
 
 # AI Provider constants
 CONF_MODELS = "models"
 
 # Supported AI providers
 DEFAULT_AI_PROVIDER = "openai"
+
+# Default models per provider (used in config flows / UI)
+DEFAULT_MODELS = {
+    "openai": ["gpt-4o", "gpt-4"],
+    "llama": ["llama2"],
+    "lmstudio": ["llama2"]
+}
