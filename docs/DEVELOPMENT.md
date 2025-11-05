@@ -6,7 +6,7 @@ This guide provides information about the development workflow and technical asp
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.12+
 - Git
 - Home Assistant development environment
 - API keys for one or more supported AI providers (OpenAI, Google Gemini, Anthropic, OpenRouter, Llama)
