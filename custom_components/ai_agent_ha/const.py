@@ -11,6 +11,7 @@ CONF_GEMINI_TOKEN = "gemini_token"  # nosec B105
 CONF_OPENROUTER_TOKEN = "openrouter_token"  # nosec B105
 CONF_ANTHROPIC_TOKEN = "anthropic_token"  # nosec B105
 CONF_LOCAL_URL = "local_url"
+CONF_LMSTUDIO_URL = "lmstudio_url"
 CONF_LOCAL_MODEL = "local_model"
 
 # Available AI providers
