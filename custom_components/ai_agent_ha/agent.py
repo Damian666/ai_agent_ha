@@ -702,7 +702,7 @@ class LMStudioClient(BaseAIClient):
                 if choices:
                     msg = choices[0].get("message", {})
                     content = msg.get("content")
-                    if content:
+                    if content is not None:
                         return content
                 return str(data)
 
