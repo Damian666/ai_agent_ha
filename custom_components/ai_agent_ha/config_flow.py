@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 
 import voluptuous as vol
+import aiohttp
+from urllib.parse import urlparse
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
@@ -15,7 +17,7 @@ from homeassistant.helpers.selector import (
     TextSelectorConfig,
 )
 
-from .const import CONF_LOCAL_MODEL, CONF_LOCAL_URL, DOMAIN
+from .const import CONF_LOCAL_MODEL, CONF_LOCAL_URL, CONF_LMSTUDIO_URL, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +28,7 @@ PROVIDERS = {
     "openrouter": "OpenRouter",
     "anthropic": "Anthropic (Claude)",
     "local": "Local Model",
+    "lmstudio": "LM Studio",
 }
 
 TOKEN_FIELD_NAMES = {
@@ -35,6 +38,7 @@ TOKEN_FIELD_NAMES = {
     "openrouter": "openrouter_token",
     "anthropic": "anthropic_token",
     "local": CONF_LOCAL_URL,  # For local models, we use URL instead of token
+    "lmstudio": CONF_LMSTUDIO_URL,
 }
 
 TOKEN_LABELS = {
@@ -44,6 +48,7 @@ TOKEN_LABELS = {
     "openrouter": "OpenRouter API Key",
     "anthropic": "Anthropic API Key",
     "local": "Local API URL (e.g., http://localhost:11434/api/generate)",
+    "lmstudio": "LM Studio API Base URL (e.g., http://localhost:1234/v1/)",
 }
 
 DEFAULT_MODELS = {
@@ -53,6 +58,7 @@ DEFAULT_MODELS = {
     "openrouter": "openai/gpt-4o",
     "anthropic": "claude-3-5-sonnet-20241022",
     "local": "llama3.2",  # Updated to use llama3.2 as default
+    "lmstudio": "",
 }
 
 AVAILABLE_MODELS = {
@@ -112,6 +118,55 @@ AVAILABLE_MODELS = {
 }
 
 DEFAULT_PROVIDER = "openai"
+
+
+async def _fetch_lmstudio_models(models_url: str):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(models_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    return []
+                try:
+                    data = await resp.json()
+                except Exception:
+                    return []
+                items = data.get("data") or data.get("models") or []
+                return [m.get("id") or m.get("name") for m in items if isinstance(m, dict)]
+    except Exception:
+        return []
+
+
+def _lmstudio_base(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        path = parsed.path or ""
+        v1_idx = path.find("/v1")
+        base_v1 = "/v1" if v1_idx == -1 else path[: v1_idx + 3]
+        return f"{parsed.scheme}://{parsed.netloc}{base_v1}"
+    except Exception:
+        return url
+
+
+async def _warmup_lmstudio(url: str, model: str):
+    if not url or not model:
+        return
+    try:
+        base = _lmstudio_base(url).rstrip("/")
+        endpoint = f"{base}/chat/completions"
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": " "}],
+            "max_tokens": 1,
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                endpoint,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                await resp.text()
+    except Exception:
+        return
 
 
 class AiAgentHaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg,misc]
@@ -178,6 +233,38 @@ class AiAgentHaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ig
                 # Store the configuration data
                 self.config_data[token_field] = token_value
 
+                # For LM Studio, if no model was provided yet, fetch models and re-render
+                if provider == "lmstudio" and not user_input.get("model") and not user_input.get("custom_model"):
+                    try:
+                        base = _lmstudio_base(token_value).rstrip("/")
+                        models_url = f"{base}/models"
+                        models = await _fetch_lmstudio_models(models_url)
+                        model_options = (models + ["Custom..."]) if models else ["Custom..."]
+                    except Exception:
+                        model_options = ["Custom..."]
+
+                    schema_dict = {
+                        vol.Required(CONF_LMSTUDIO_URL, default=token_value): TextSelector(
+                            TextSelectorConfig(type="text")
+                        ),
+                    }
+                    schema_dict[vol.Optional("model", default="Custom...")] = SelectSelector(
+                        SelectSelectorConfig(options=model_options)
+                    )
+                    schema_dict[vol.Optional("custom_model")] = TextSelector(
+                        TextSelectorConfig(type="text")
+                    )
+
+                    return self.async_show_form(
+                        step_id="configure",
+                        data_schema=vol.Schema(schema_dict),
+                        errors=errors,
+                        description_placeholders={
+                            "token_label": "LM Studio API URL",
+                            "provider": PROVIDERS[provider],
+                        },
+                    )
+
                 # Add model configuration if provided
                 selected_model = user_input.get("model")
                 custom_model = user_input.get("custom_model")
@@ -197,12 +284,17 @@ class AiAgentHaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ig
                     # Use selected model if it's not the "Custom..." option
                     self.config_data["models"][provider] = selected_model
                 else:
-                    # For local provider, allow empty model name
-                    if provider == "local":
+                    # For local-like providers, allow empty model name
+                    if provider in ("local", "lmstudio"):
                         self.config_data["models"][provider] = ""
                     else:
                         # Fallback to default model for other providers
                         self.config_data["models"][provider] = default_model
+
+                if provider == "lmstudio":
+                    await _warmup_lmstudio(
+                        token_value, self.config_data["models"].get("lmstudio", "")
+                    )
 
                 return self.async_create_entry(
                     title=f"AI Agent HA ({PROVIDERS[provider]})",
@@ -214,10 +306,10 @@ class AiAgentHaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ig
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
 
-        if provider == "local":
+        if provider in ("local", "lmstudio"):
             # For local provider, we need both URL and optional model name
             schema_dict = {
-                vol.Required(CONF_LOCAL_URL): TextSelector(
+                vol.Required(CONF_LOCAL_URL if provider == "local" else CONF_LMSTUDIO_URL): TextSelector(
                     TextSelectorConfig(type="text")
                 ),
             }
@@ -236,7 +328,7 @@ class AiAgentHaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ig
                 data_schema=vol.Schema(schema_dict),
                 errors=errors,
                 description_placeholders={
-                    "token_label": "Local API URL",
+                    "token_label": "Local API URL" if provider == "local" else "LM Studio API URL",
                     "provider": PROVIDERS[provider],
                 },
             )
@@ -374,24 +466,43 @@ class AiAgentHaOptionsFlowHandler(config_entries.OptionsFlow):
                         self.config_entry, data=updated_data
                     )
 
+                    if provider == "lmstudio":
+                        await _warmup_lmstudio(
+                            updated_data.get(CONF_LMSTUDIO_URL, ""),
+                            updated_data.get("models", {}).get("lmstudio", ""),
+                        )
+
                     return self.async_create_entry(title="", data={})
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("Unexpected exception in options flow")
                 errors["base"] = "unknown"
 
         # Build schema for the selected provider in options
-        if provider == "local":
+        if provider in ("local", "lmstudio"):
             # For local provider, we need both URL and optional model name
-            current_url = self.config_entry.data.get(CONF_LOCAL_URL, "")
+            current_url = self.config_entry.data.get(
+                CONF_LOCAL_URL if provider == "local" else CONF_LMSTUDIO_URL,
+                "",
+            )
 
             schema_dict = {
-                vol.Required(CONF_LOCAL_URL, default=current_url): TextSelector(
-                    TextSelectorConfig(type="text")
-                ),
+                vol.Required(
+                    CONF_LOCAL_URL if provider == "local" else CONF_LMSTUDIO_URL,
+                    default=current_url,
+                ): TextSelector(TextSelectorConfig(type="text")),
             }
 
             # Add model selection
             model_options = AVAILABLE_MODELS.get("local", ["Custom..."])
+            if provider == "lmstudio" and current_url:
+                try:
+                    base = _lmstudio_base(current_url).rstrip("/")
+                    models_url = f"{base}/models"
+                    models = await _fetch_lmstudio_models(models_url)
+                    if models:
+                        model_options = models + ["Custom..."]
+                except Exception:
+                    pass
             schema_dict[
                 vol.Optional(
                     "model", default=current_model if current_model else "Custom..."
@@ -406,7 +517,7 @@ class AiAgentHaOptionsFlowHandler(config_entries.OptionsFlow):
                 data_schema=vol.Schema(schema_dict),
                 errors=errors,
                 description_placeholders={
-                    "token_label": "Local API URL",
+                    "token_label": "Local API URL" if provider == "local" else "LM Studio API URL",
                     "provider": PROVIDERS[provider],
                 },
             )

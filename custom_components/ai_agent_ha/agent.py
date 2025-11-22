@@ -578,7 +578,71 @@ class OpenAIClient(BaseAIClient):
                     _LOGGER.debug(
                         "Full OpenAI response: %s", json.dumps(data, indent=2)
                     )
-                    return str(data)
+        return str(data)
+
+
+class LMStudioClient(BaseAIClient):
+    """Client for LM Studio API."""
+
+    def __init__(self, url: str, model: str = ""):
+        """Initialize the LM Studio client.
+
+        Args:
+            url: The API URL.
+            model: The model name.
+        """
+        u = (url or "").rstrip("/")
+        u_lower = u.lower()
+        # If user provided base ending with /v1, default to chat completions
+        if u_lower.endswith("/v1"):
+            self.api_url = f"{u}/chat/completions"
+        elif u_lower.endswith("/chat/completions") or u_lower.endswith("/responses") or u_lower.endswith("/completions"):
+            self.api_url = u
+        else:
+            # Fallback: assume base, append chat completions
+            self.api_url = f"{u}/v1/chat/completions"
+        self.model = model
+
+    async def get_response(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+        """Get response from LM Studio API.
+
+        Args:
+            messages: List of message dictionaries.
+            **kwargs: Additional arguments.
+
+        Returns:
+            The response text.
+        """
+        headers = {"Content-Type": "application/json"}
+
+        # LM Studio (OpenAI-compatible) requires a model parameter
+        if not self.model:
+            raise Exception("Missing LM Studio model configuration")
+
+        payload = {"messages": messages, "model": self.model, "max_tokens": 2048}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                self.api_url,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as resp:
+                response_text = await resp.text()
+                if resp.status != 200:
+                    raise Exception(f"LM Studio API error {resp.status}: {response_text}")
+                try:
+                    data = json.loads(response_text)
+                except json.JSONDecodeError:
+                    return response_text
+
+                choices = data.get("choices", [])
+                if choices:
+                    msg = choices[0].get("message", {})
+                    content = msg.get("content")
+                    if content:
+                        return content
+                return str(data)
 
 
 class GeminiClient(BaseAIClient):
@@ -1061,6 +1125,16 @@ class AiAgentHaAgent:
                 _LOGGER.error("Missing local_url for local provider")
                 raise Exception("Missing local_url configuration for local provider")
             self.ai_client = LocalClient(url, model)
+        elif provider == "lmstudio":
+            model = models_config.get("lmstudio", "")
+            url = config.get("lmstudio_url")
+            if not url:
+                _LOGGER.error("Missing lmstudio_url for lmstudio provider")
+                raise Exception("Missing lmstudio_url configuration for lmstudio provider")
+            if not model:
+                _LOGGER.error("Missing model for lmstudio provider")
+                raise Exception("Missing model configuration for lmstudio provider")
+            self.ai_client = LMStudioClient(url, model)
         else:  # default to llama if somehow specified
             model = models_config.get("llama", "Llama-4-Maverick-17B-128E-Instruct-FP8")
             self.ai_client = LlamaClient(config.get("llama_token"), model)
@@ -1085,14 +1159,16 @@ class AiAgentHaAgent:
             token = self.config.get("anthropic_token")
         elif provider == "local":
             token = self.config.get("local_url")
+        elif provider == "lmstudio":
+            token = self.config.get("lmstudio_url")
         else:
             token = self.config.get("llama_token")
 
         if not token or not isinstance(token, str):
             return False
 
-        # For local provider, validate URL format
-        if provider == "local":
+        # For local-like providers, validate URL format
+        if provider in ("local", "lmstudio"):
             return bool(token.startswith(("http://", "https://")))
 
         # Add more specific validation based on your API key format
@@ -2271,6 +2347,11 @@ Then restart Home Assistant to see your new dashboard in the sidebar."""
                     "model": models_config.get("local", ""),
                     "client_class": LocalClient,
                 },
+                "lmstudio": {
+                    "token_key": "lmstudio_url",
+                    "model": models_config.get("lmstudio", ""),
+                    "client_class": LMStudioClient,
+                },
             }
 
             # Validate provider and get configuration
@@ -2285,13 +2366,13 @@ Then restart Home Assistant to see your new dashboard in the sidebar."""
 
             # Validate token/URL
             if not token:
-                error_msg = f"No {'URL' if selected_provider == 'local' else 'token'} configured for provider {selected_provider}"
+                error_msg = f"No {'URL' if selected_provider in ('local', 'lmstudio') else 'token'} configured for provider {selected_provider}"
                 _LOGGER.error(error_msg)
                 return {"success": False, "error": error_msg}
 
             # Initialize client
             try:
-                if selected_provider == "local":
+                if selected_provider in ("local", "lmstudio"):
                     # LocalClient takes (url, model)
                     self.ai_client = provider_settings["client_class"](
                         url=token, model=provider_settings["model"]
