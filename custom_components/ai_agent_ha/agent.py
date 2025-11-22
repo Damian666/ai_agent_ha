@@ -688,6 +688,9 @@ class LMStudioClient(BaseAIClient):
             "temperature": 0.7,
             "top_p": 0.9,
         }
+        # Allow overriding parameters via kwargs (e.g., tools, functions)
+        if kwargs:
+            payload.update(kwargs)
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
