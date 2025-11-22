@@ -686,6 +686,7 @@ class LMStudioClient(BaseAIClient):
             "model": self.model,
         }
 
+        _LOGGER.debug("LM Studio request to %s with model: %s", self.api_url, self.model)
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -702,18 +703,17 @@ class LMStudioClient(BaseAIClient):
                 except json.JSONDecodeError:
                     return response_text
 
+                _LOGGER.debug("LM Studio response: %s", json.dumps(data, indent=2))
+
                 choices = data.get("choices", [])
                 if choices:
                     msg = choices[0].get("message", {})
                     content = msg.get("content")
-                    if content:
+                    if content is not None:
+                        if not content:
+                            _LOGGER.warning("LM Studio returned empty content. Full response: %s", data)
                         return content
-                    return json.dumps(
-                        {
-                            "request_type": "final_response",
-                            "response": "Error: The AI model returned an empty response. Please check your model settings or try a different prompt.",
-                        }
-                    )
+                _LOGGER.warning("LM Studio response has no choices. Full response: %s", data)
                 return str(data)
 
 
