@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any, Dict, List, Optional
 
 import voluptuous as vol
 import aiohttp
@@ -120,7 +121,7 @@ AVAILABLE_MODELS = {
 DEFAULT_PROVIDER = "openai"
 
 
-async def _fetch_lmstudio_models(models_url: str):
+async def _fetch_lmstudio_models(models_url: str) -> List[str]:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(models_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -147,7 +148,7 @@ def _lmstudio_base(url: str) -> str:
         return url
 
 
-async def _warmup_lmstudio(url: str, model: str):
+async def _warmup_lmstudio(url: str, model: str) -> None:
     if not url or not model:
         return
     try:
@@ -185,7 +186,9 @@ class AiAgentHaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ig
             _LOGGER.error("Error creating options flow: %s", e)
             return None
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
         errors = {}
 
@@ -213,7 +216,9 @@ class AiAgentHaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ig
             ),
         )
 
-    async def async_step_configure(self, user_input=None):
+    async def async_step_configure(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
         """Handle the configuration step for the selected provider."""
         errors = {}
         provider = self.config_data["ai_provider"]
@@ -374,7 +379,9 @@ class AiAgentHaOptionsFlowHandler(config_entries.OptionsFlow):
         self.config_entry = config_entry
         self.options_data = {}
 
-    async def async_step_init(self, user_input=None):
+    async def async_step_init(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
         """Handle the initial options step - provider selection."""
         current_provider = self.config_entry.data.get("ai_provider", DEFAULT_PROVIDER)
 
@@ -404,7 +411,9 @@ class AiAgentHaOptionsFlowHandler(config_entries.OptionsFlow):
             description_placeholders={"current_provider": PROVIDERS[current_provider]},
         )
 
-    async def async_step_configure_options(self, user_input=None):
+    async def async_step_configure_options(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
         """Handle the configuration step for the selected provider in options."""
         errors = {}
         provider = self.options_data["ai_provider"]

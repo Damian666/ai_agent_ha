@@ -102,16 +102,44 @@ def sanitize_for_logging(data: Any, mask: str = "***REDACTED***") -> Any:
 
 # === AI Client Abstractions ===
 class BaseAIClient:
-    async def get_response(self, messages, **kwargs):
+    """Base class for AI clients."""
+
+    async def get_response(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+        """Get response from the AI provider.
+
+        Args:
+            messages: List of message dictionaries with 'role' and 'content'.
+            **kwargs: Additional arguments.
+
+        Returns:
+            The response text from the AI.
+        """
         raise NotImplementedError
 
 
 class LocalClient(BaseAIClient):
-    def __init__(self, url, model=""):
+    """Client for local AI models (Ollama, etc.)."""
+
+    def __init__(self, url: str, model: str = ""):
+        """Initialize the local client.
+
+        Args:
+            url: The API URL for the local model.
+            model: The model name (optional).
+        """
         self.url = url
         self.model = model
 
-    async def get_response(self, messages, **kwargs):
+    async def get_response(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+        """Get response from the local AI model.
+
+        Args:
+            messages: List of message dictionaries.
+            **kwargs: Additional arguments.
+
+        Returns:
+            The response text.
+        """
         _LOGGER.debug(
             "Making request to local API with model: '%s' at URL: %s",
             self.model or "[NO MODEL SPECIFIED]",
@@ -438,12 +466,29 @@ class LocalClient(BaseAIClient):
 
 
 class LlamaClient(BaseAIClient):
-    def __init__(self, token, model="Llama-4-Maverick-17B-128E-Instruct-FP8"):
+    """Client for Llama API."""
+
+    def __init__(self, token: str, model: str = "Llama-4-Maverick-17B-128E-Instruct-FP8"):
+        """Initialize the Llama client.
+
+        Args:
+            token: The API token.
+            model: The model name.
+        """
         self.token = token
         self.model = model
         self.api_url = "https://api.llama.com/v1/chat/completions"
 
-    async def get_response(self, messages, **kwargs):
+    async def get_response(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+        """Get response from Llama API.
+
+        Args:
+            messages: List of message dictionaries.
+            **kwargs: Additional arguments.
+
+        Returns:
+            The response text.
+        """
         _LOGGER.debug("Making request to Llama API with model: %s", self.model)
         headers = {
             "Authorization": f"Bearer {self.token}",
@@ -478,7 +523,15 @@ class LlamaClient(BaseAIClient):
 
 
 class OpenAIClient(BaseAIClient):
-    def __init__(self, token, model="gpt-3.5-turbo"):
+    """Client for OpenAI API."""
+
+    def __init__(self, token: str, model: str = "gpt-3.5-turbo"):
+        """Initialize the OpenAI client.
+
+        Args:
+            token: The API key.
+            model: The model name.
+        """
         self.token = token
         self.model = model
         self.api_url = "https://api.openai.com/v1/chat/completions"
@@ -509,7 +562,16 @@ class OpenAIClient(BaseAIClient):
         model_lower = self.model.lower()
         return any(model_id in model_lower for model_id in restricted_models)
 
-    async def get_response(self, messages, **kwargs):
+    async def get_response(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+        """Get response from OpenAI API.
+
+        Args:
+            messages: List of message dictionaries.
+            **kwargs: Additional arguments.
+
+        Returns:
+            The response text.
+        """
         _LOGGER.debug("Making request to OpenAI API with model: %s", self.model)
 
         # Validate token
@@ -646,14 +708,31 @@ class LMStudioClient(BaseAIClient):
 
 
 class GeminiClient(BaseAIClient):
-    def __init__(self, token, model="gemini-2.5-flash"):
+    """Client for Google Gemini API."""
+
+    def __init__(self, token: str, model: str = "gemini-2.5-flash"):
+        """Initialize the Gemini client.
+
+        Args:
+            token: The API key.
+            model: The model name.
+        """
         self.token = token.strip() if token else token  # Strip whitespace from token
         self.model = model
         # Use v1beta for all models as per Google's current API documentation
         # All Gemini 2.0/2.5 models are available on v1beta endpoint
         self.api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-    async def get_response(self, messages, **kwargs):
+    async def get_response(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+        """Get response from Gemini API.
+
+        Args:
+            messages: List of message dictionaries.
+            **kwargs: Additional arguments.
+
+        Returns:
+            The response text.
+        """
         _LOGGER.debug("Making request to Gemini API with model: %s", self.model)
 
         # Validate token
@@ -747,12 +826,29 @@ class GeminiClient(BaseAIClient):
 
 
 class AnthropicClient(BaseAIClient):
-    def __init__(self, token, model="claude-3-5-sonnet-20241022"):
+    """Client for Anthropic (Claude) API."""
+
+    def __init__(self, token: str, model: str = "claude-3-5-sonnet-20241022"):
+        """Initialize the Anthropic client.
+
+        Args:
+            token: The API key.
+            model: The model name.
+        """
         self.token = token
         self.model = model
         self.api_url = "https://api.anthropic.com/v1/messages"
 
-    async def get_response(self, messages, **kwargs):
+    async def get_response(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+        """Get response from Anthropic API.
+
+        Args:
+            messages: List of message dictionaries.
+            **kwargs: Additional arguments.
+
+        Returns:
+            The response text.
+        """
         _LOGGER.debug("Making request to Anthropic API with model: %s", self.model)
         headers = {
             "x-api-key": self.token,
@@ -812,12 +908,29 @@ class AnthropicClient(BaseAIClient):
 
 
 class OpenRouterClient(BaseAIClient):
-    def __init__(self, token, model="openai/gpt-4o"):
+    """Client for OpenRouter API."""
+
+    def __init__(self, token: str, model: str = "openai/gpt-4o"):
+        """Initialize the OpenRouter client.
+
+        Args:
+            token: The API key.
+            model: The model name.
+        """
         self.token = token
         self.model = model
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
 
-    async def get_response(self, messages, **kwargs):
+    async def get_response(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+        """Get response from OpenRouter API.
+
+        Args:
+            messages: List of message dictionaries.
+            **kwargs: Additional arguments.
+
+        Returns:
+            The response text.
+        """
         _LOGGER.debug("Making request to OpenRouter API with model: %s", self.model)
         headers = {
             "Authorization": f"Bearer {self.token}",
