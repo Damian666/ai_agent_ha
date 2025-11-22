@@ -681,7 +681,13 @@ class LMStudioClient(BaseAIClient):
         if not self.model:
             raise Exception("Missing LM Studio model configuration")
 
-        payload = {"messages": messages, "model": self.model, "max_tokens": 2048}
+        payload = {
+            "messages": messages,
+            "model": self.model,
+            "max_tokens": 2048,
+            "temperature": 0.7,
+            "top_p": 0.9,
+        }
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
