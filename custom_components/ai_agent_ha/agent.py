@@ -684,6 +684,9 @@ class LMStudioClient(BaseAIClient):
         payload = {
             "messages": messages,
             "model": self.model,
+            "max_tokens": 2048,
+            "temperature": 0.7,
+            "top_p": 0.9,
         }
 
         _LOGGER.debug("LM Studio request to %s with model: %s", self.api_url, self.model)
