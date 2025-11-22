@@ -15,7 +15,7 @@ CONF_LMSTUDIO_URL = "lmstudio_url"
 CONF_LOCAL_MODEL = "local_model"
 
 # Available AI providers
-AI_PROVIDERS = ["llama", "openai", "gemini", "openrouter", "anthropic", "local"]
+AI_PROVIDERS = ["llama", "openai", "gemini", "openrouter", "anthropic", "local", "lmstudio"]
 
 # AI Provider constants
 CONF_MODELS = "models"
