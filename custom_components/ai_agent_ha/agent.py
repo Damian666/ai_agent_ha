@@ -685,9 +685,7 @@ class LMStudioClient(BaseAIClient):
             "messages": messages,
             "model": self.model,
         }
-        # Allow overriding parameters via kwargs (e.g., tools, functions)
-        if kwargs:
-            payload.update(kwargs)
+
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
