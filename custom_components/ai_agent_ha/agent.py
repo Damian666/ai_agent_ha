@@ -684,8 +684,6 @@ class LMStudioClient(BaseAIClient):
         payload = {
             "messages": messages,
             "model": self.model,
-            "temperature": 0.7,
-            "top_p": 0.9,
         }
         # Allow overriding parameters via kwargs (e.g., tools, functions)
         if kwargs:
