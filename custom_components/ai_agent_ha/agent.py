@@ -706,8 +706,14 @@ class LMStudioClient(BaseAIClient):
                 if choices:
                     msg = choices[0].get("message", {})
                     content = msg.get("content")
-                    if content is not None:
+                    if content:
                         return content
+                    return json.dumps(
+                        {
+                            "request_type": "final_response",
+                            "response": "Error: The AI model returned an empty response. Please check your model settings or try a different prompt.",
+                        }
+                    )
                 return str(data)
 
 
