@@ -716,12 +716,57 @@ class LMStudioClient(BaseAIClient):
                     content = msg.get("content")
                     tool_calls = msg.get("tool_calls", [])
                     
-                    # If there are tool calls, format them for the integration
+                    # If there are tool calls, convert them to the integration's JSON format
                     if tool_calls:
                         _LOGGER.debug("LM Studio returned %d tool calls", len(tool_calls))
-                        # Return the content along with tool calls info
-                        # The integration expects JSON, so we'll format it appropriately
-                        return content if content else ""
+                        # Convert the first tool call to the integration's expected format
+                        tool_call = tool_calls[0]
+                        function = tool_call.get("function", {})
+                        function_name = function.get("name", "")
+                        arguments = function.get("arguments", "{}")
+                        
+                        # Parse arguments if they're a string
+                        if isinstance(arguments, str):
+                            try:
+                                args_dict = json.loads(arguments) if arguments else {}
+                            except json.JSONDecodeError:
+                                args_dict = {}
+                        else:
+                            args_dict = arguments
+                        
+                        # Convert to integration's JSON format
+                        if function_name == "get_weather_data":
+                            response_json = {"request_type": "data_request", "request": "get_weather_data"}
+                        elif function_name == "get_entity_state":
+                            response_json = {
+                                "request_type": "data_request",
+                                "request": "get_entity_state",
+                                "parameters": args_dict
+                            }
+                        elif function_name == "get_entities_by_domain":
+                            response_json = {
+                                "request_type": "data_request",
+                                "request": "get_entities_by_domain",
+                                "parameters": args_dict
+                            }
+                        elif function_name == "call_service":
+                            response_json = {
+                                "request_type": "call_service",
+                                "domain": args_dict.get("domain"),
+                                "service": args_dict.get("service"),
+                                "target": args_dict.get("target", {}),
+                                "service_data": args_dict.get("service_data", {})
+                            }
+                        else:
+                            # Unknown function, return as-is
+                            response_json = {
+                                "request_type": "data_request",
+                                "request": function_name,
+                                "parameters": args_dict
+                            }
+                        
+                        _LOGGER.debug("Converted tool call to JSON: %s", response_json)
+                        return json.dumps(response_json)
                     
                     if content is not None:
                         if not content:
