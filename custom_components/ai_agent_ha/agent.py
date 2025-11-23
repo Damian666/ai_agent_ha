@@ -1284,7 +1284,7 @@ class AiAgentHaAgent:
         self.ai_client: BaseAIClient
         self._cache_timeout = 300  # 5 minutes
         self._max_retries = 10
-        self._retry_delay = 1  # seconds
+        self._retry_delay = 3  # seconds (increased for slower local models)
         self._rate_limit = 60  # requests per minute
         self._last_request_time = 0
         self._request_count = 0
