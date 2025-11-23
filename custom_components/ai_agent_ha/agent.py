@@ -1297,7 +1297,7 @@ class AiAgentHaAgent:
         _LOGGER.debug("Models config loaded: %s", models_config)
 
         # Set the appropriate system prompt based on provider
-        if provider == ("local", "lmstudio"):
+        if provider in ("local", "lmstudio"):
             self.system_prompt = self.SYSTEM_PROMPT_LOCAL
             _LOGGER.debug("Using local-optimized system prompt")
         else:
