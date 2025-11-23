@@ -686,11 +686,6 @@ class LMStudioClient(BaseAIClient):
             "model": self.model,
         }
 
-        # Add tools if provided (for native function calling)
-        if "tools" in kwargs and kwargs["tools"]:
-            payload["tools"] = kwargs["tools"]
-            _LOGGER.debug("Adding %d tools to LM Studio request", len(kwargs["tools"]))
-
         _LOGGER.debug("LM Studio request to %s with model: %s", self.api_url, self.model)
 
         async with aiohttp.ClientSession() as session:
@@ -714,60 +709,6 @@ class LMStudioClient(BaseAIClient):
                 if choices:
                     msg = choices[0].get("message", {})
                     content = msg.get("content")
-                    tool_calls = msg.get("tool_calls", [])
-                    
-                    # If there are tool calls, convert them to the integration's JSON format
-                    if tool_calls:
-                        _LOGGER.debug("LM Studio returned %d tool calls", len(tool_calls))
-                        # Convert the first tool call to the integration's expected format
-                        tool_call = tool_calls[0]
-                        function = tool_call.get("function", {})
-                        function_name = function.get("name", "")
-                        arguments = function.get("arguments", "{}")
-                        
-                        # Parse arguments if they're a string
-                        if isinstance(arguments, str):
-                            try:
-                                args_dict = json.loads(arguments) if arguments else {}
-                            except json.JSONDecodeError:
-                                args_dict = {}
-                        else:
-                            args_dict = arguments
-                        
-                        # Convert to integration's JSON format
-                        if function_name == "get_weather_data":
-                            response_json = {"request_type": "data_request", "request": "get_weather_data"}
-                        elif function_name == "get_entity_state":
-                            response_json = {
-                                "request_type": "data_request",
-                                "request": "get_entity_state",
-                                "parameters": args_dict
-                            }
-                        elif function_name == "get_entities_by_domain":
-                            response_json = {
-                                "request_type": "data_request",
-                                "request": "get_entities_by_domain",
-                                "parameters": args_dict
-                            }
-                        elif function_name == "call_service":
-                            response_json = {
-                                "request_type": "call_service",
-                                "domain": args_dict.get("domain"),
-                                "service": args_dict.get("service"),
-                                "target": args_dict.get("target", {}),
-                                "service_data": args_dict.get("service_data", {})
-                            }
-                        else:
-                            # Unknown function, return as-is
-                            response_json = {
-                                "request_type": "data_request",
-                                "request": function_name,
-                                "parameters": args_dict
-                            }
-                        
-                        _LOGGER.debug("Converted tool call to JSON: %s", response_json)
-                        return json.dumps(response_json)
-                    
                     if content is not None:
                         if not content:
                             _LOGGER.warning("LM Studio returned empty content. Full response: %s", data)
@@ -1256,69 +1197,6 @@ class AiAgentHaAgent:
             'CORRECT: \'{"request_type": "dashboard_suggestion", "message": "I\'ll create this for you.", ...}\''
         ),
     }
-
-    @staticmethod
-    def _get_tool_definitions() -> List[Dict[str, Any]]:
-        """Get OpenAI-style tool definitions for Home Assistant commands.
-        
-        Returns:
-            List of tool definitions in OpenAI format.
-        """
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_entity_state",
-                    "description": "Get state of a specific entity",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {"type": "string", "description": "The entity ID to get state for"}
-                        },
-                        "required": ["entity_id"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_weather_data",
-                    "description": "Get current weather and forecast data",
-                    "parameters": {"type": "object", "properties": {}}
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_entities_by_domain",
-                    "description": "Get all entities in a specific domain",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "domain": {"type": "string", "description": "The domain to filter by (e.g., 'light', 'switch')"}
-                        },
-                        "required": ["domain"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "call_service",
-                    "description": "Call any Home Assistant service directly",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "domain": {"type": "string", "description": "Service domain (e.g., 'light', 'switch')"},
-                            "service": {"type": "string", "description": "Service name (e.g., 'turn_on', 'turn_off')"},
-                            "target": {"type": "object", "description": "Target entities"},
-                            "service_data": {"type": "object", "description": "Additional service data"}
-                        },
-                        "required": ["domain", "service"]
-                    }
-                }
-            }
-        ]
 
     def __init__(self, hass: HomeAssistant, config: Dict[str, Any]):
         """Initialize the agent with provider selection."""
@@ -3378,15 +3256,7 @@ Then restart Home Assistant to see your new dashboard in the sidebar."""
                     retry_count + 1,
                     self._max_retries,
                 )
-                
-                # Pass tools to LM Studio for native function calling
-                if self.config.get("ai_provider") == "lmstudio":
-                    tools = self._get_tool_definitions()
-                    _LOGGER.debug("Passing %d tools to LM Studio", len(tools))
-                    response = await self.ai_client.get_response(recent_messages, tools=tools)
-                else:
-                    response = await self.ai_client.get_response(recent_messages)
-                    
+                response = await self.ai_client.get_response(recent_messages)
                 _LOGGER.debug(
                     "AI client returned response of length: %d", len(response or "")
                 )
