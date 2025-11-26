@@ -15,7 +15,7 @@ ai_agent_ha:
     llama: "Llama-4-Maverick-17B-128E-Instruct-FP8"
     gemini: "gemini-2.5-flash"  # or "gemini-2.5-pro", "gemini-2.0-flash", etc.
     openrouter: "openai/gpt-4o"  # or any model available on OpenRouter
-    anthropic: "claude-3-5-sonnet-20241022"  # or "claude-3-opus-20240229", etc.
+    anthropic: "claude-sonnet-4-5-20250929"  # or "claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-opus-20240229", etc.
     local: "llama3.2"  # model name for local API (optional if your API doesn't require it)
 """
 
@@ -145,6 +145,7 @@ class LocalClient(BaseAIClient):
         payload = {
             "prompt": prompt,
             "stream": False,  # Disable streaming to get a single complete response
+            # max_tokens omitted - let local model use its default capacity
         }
 
         # Add model if specified
@@ -452,9 +453,9 @@ class LlamaClient(BaseAIClient):
         payload = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": 2048,
             "temperature": 0.7,
             "top_p": 0.9,
+            # max_tokens omitted - let Llama use the model's default capacity
         }
 
         _LOGGER.debug("Llama request payload: %s", json.dumps(payload, indent=2))
@@ -483,24 +484,6 @@ class OpenAIClient(BaseAIClient):
         self.model = model
         self.api_url = "https://api.openai.com/v1/chat/completions"
 
-    def _get_token_parameter(self):
-        """Determine which token parameter to use based on the model."""
-        # Models that require max_completion_tokens instead of max_tokens
-        completion_token_models = [
-            "o3-mini",
-            "o3",
-            "o1-mini",
-            "o1-preview",
-            "o1",
-            "gpt-5",
-        ]
-
-        # Check if the model name contains any of the newer model identifiers
-        model_lower = self.model.lower()
-        if any(model_id in model_lower for model_id in completion_token_models):
-            return "max_completion_tokens"
-        return "max_tokens"
-
     def _is_restricted_model(self):
         """Check if the model has restricted parameters (no temperature, top_p, etc.)."""
         # Models that don't support temperature, top_p and other parameters
@@ -521,18 +504,17 @@ class OpenAIClient(BaseAIClient):
             "Content-Type": "application/json",
         }
 
-        # Determine which token parameter to use
-        token_param = self._get_token_parameter()
+        # Check if model has restricted parameters
         is_restricted = self._is_restricted_model()
         _LOGGER.debug(
-            "Using token parameter '%s' for model: %s (restricted: %s)",
-            token_param,
+            "Using model: %s (restricted parameters: %s)",
             self.model,
             is_restricted,
         )
 
         # Build payload with model-appropriate parameters
-        payload = {"model": self.model, "messages": messages, token_param: 2048}
+        # Don't set max_tokens - let OpenAI use the model's maximum capacity
+        payload = {"model": self.model, "messages": messages}
 
         # Only add temperature and top_p for models that support them
         if not is_restricted:
@@ -689,7 +671,7 @@ class GeminiClient(BaseAIClient):
             "generationConfig": {
                 "temperature": 0.7,
                 "topP": 0.9,
-                "maxOutputTokens": 2048,
+                # maxOutputTokens omitted - let Gemini use model's maximum capacity
             },
         }
 
@@ -721,9 +703,28 @@ class GeminiClient(BaseAIClient):
                         f"Invalid JSON response from Gemini: {response_text[:200]}"
                     )
 
+                # Log token usage for debugging, especially for Gemini 2.5 extended thinking
+                usage_metadata = data.get("usageMetadata", {})
+                if usage_metadata:
+                    _LOGGER.debug(
+                        "Gemini token usage - prompt: %d, total: %d, thoughts: %d",
+                        usage_metadata.get("promptTokenCount", 0),
+                        usage_metadata.get("totalTokenCount", 0),
+                        usage_metadata.get("thoughtsTokenCount", 0),
+                    )
+
                 # Extract text from Gemini response
                 candidates = data.get("candidates", [])
                 if candidates and "content" in candidates[0]:
+                    # Check finish reason for potential issues
+                    finish_reason = candidates[0].get("finishReason", "")
+                    if finish_reason == "MAX_TOKENS":
+                        _LOGGER.warning(
+                            "Gemini response truncated due to MAX_TOKENS limit. "
+                            "Thoughts used: %d tokens. Consider increasing maxOutputTokens.",
+                            usage_metadata.get("thoughtsTokenCount", 0),
+                        )
+
                     parts = candidates[0]["content"].get("parts", [])
                     if parts:
                         content = parts[0].get("text", "")
@@ -747,7 +748,7 @@ class GeminiClient(BaseAIClient):
 
 
 class AnthropicClient(BaseAIClient):
-    def __init__(self, token, model="claude-3-5-sonnet-20241022"):
+    def __init__(self, token, model="claude-sonnet-4-5-20250929"):
         self.token = token
         self.model = model
         self.api_url = "https://api.anthropic.com/v1/messages"
@@ -778,7 +779,7 @@ class AnthropicClient(BaseAIClient):
 
         payload = {
             "model": self.model,
-            "max_tokens": 2048,
+            "max_tokens": 8192,  # Maximum for Anthropic Claude models
             "temperature": 0.7,
             "messages": anthropic_messages,
         }
@@ -828,9 +829,9 @@ class OpenRouterClient(BaseAIClient):
         payload = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": 2048,
             "temperature": 0.7,
             "top_p": 0.9,
+            # max_tokens omitted - let OpenRouter use the model's maximum capacity
         }
 
         _LOGGER.debug("OpenRouter request payload: %s", json.dumps(payload, indent=2))
@@ -873,13 +874,15 @@ class AiAgentHaAgent:
             "You can request specific data by using only these commands:\n"
             "- get_entity_state(entity_id): Get state of a specific entity\n"
             "- get_entities_by_domain(domain): Get all entities in a domain\n"
+            "- get_entities_by_device_class(device_class, domain?): Get entities with specific device_class (e.g., 'temperature', 'humidity', 'motion')\n"
+            "- get_climate_related_entities(): Get all climate-related entities (climate.* entities + temperature/humidity sensors)\n"
             "- get_entities_by_area(area_id): Get all entities in a specific area\n"
             "- get_entities(area_id or area_ids): Get entities by area(s) - supports single area_id or list of area_ids\n"
             "  Use as: get_entities(area_ids=['area1', 'area2']) for multiple areas or get_entities(area_id='single_area')\n"
             "- get_calendar_events(entity_id?): Get calendar events\n"
             "- get_automations(): Get all automations\n"
             "- get_weather_data(): Get current weather and forecast data\n"
-            "- get_entity_registry(): Get entity registry entries\n"
+            "- get_entity_registry(): Get entity registry entries (now includes device_class, state_class, unit_of_measurement)\n"
             "- get_device_registry(): Get device registry entries\n"
             "- get_area_registry(): Get room/area information\n"
             "- get_history(entity_id, hours): Get historical state changes\n"
@@ -894,13 +897,19 @@ class AiAgentHaAgent:
             "- create_automation(automation): Create a new automation with the provided configuration\n"
             "- create_dashboard(dashboard_config): Create a new dashboard with the provided configuration\n"
             "- update_dashboard(dashboard_url, dashboard_config): Update an existing dashboard configuration\n\n"
-            "You can also create dashboards when users ask for them. When creating dashboards:\n"
-            "1. First gather information about available entities, areas, and devices\n"
-            "2. Ask follow-up questions if the user's requirements are unclear\n"
-            "3. Create a dashboard configuration with appropriate cards and views\n"
-            "4. Use common card types like: entities, glance, picture-entity, weather-forecast, thermostat, media-control, etc.\n"
-            "5. Organize cards logically by rooms, device types, or functionality\n"
-            "6. Include relevant entities based on the user's request\n\n"
+            "IMPORTANT DEVICE_CLASS GUIDANCE:\n"
+            "- Many sensors have a 'device_class' attribute (temperature, humidity, motion, etc.)\n"
+            "- Use get_climate_related_entities() for climate dashboards (includes climate.* entities and temperature/humidity sensors)\n"
+            "- Use get_entities_by_device_class(device_class) to filter by device_class (e.g., 'temperature', 'humidity', 'motion')\n"
+            "- For climate dashboards, use history-graph and gauge cards for temperature/humidity sensors\n\n"
+            "DASHBOARD CREATION:\n"
+            "When a user asks to create a dashboard:\n"
+            "1. Gather entities using get_climate_related_entities() or other get_* commands\n"
+            "2. Respond with JSON using request_type: 'dashboard_suggestion' (NEVER use 'final_response'!)\n"
+            "3. Use Lovelace JSON format (NOT YAML!)\n"
+            "4. Example response structure:\n"
+            '{"request_type": "dashboard_suggestion", "message": "Dashboard created", "dashboard": {"title": "...", "views": [...]}}\n'
+            "5. Do NOT include YAML, markdown, or code blocks - only pure JSON\n\n"
             "IMPORTANT AREA/FLOOR GUIDANCE:\n"
             "- When users ask for entities from a specific floor, use get_area_registry() first\n"
             "- Areas have both 'area_id' and 'floor_id' - these are different concepts\n"
@@ -908,9 +917,11 @@ class AiAgentHaAgent:
             "- Use get_entities() with area_ids parameter to get entities from multiple areas efficiently\n"
             "- Example: get_entities(area_ids=['area1', 'area2', 'area3']) for multiple areas at once\n"
             "- This is more efficient than calling get_entities_by_area() multiple times\n\n"
-            "You can also create automations when users ask for them. When you detect that a user wants to create an automation, make sure to request first entities so you know the entity IDs to trigger on. Pay attention that if you want to set specific days in the automation you should use those days: ['fri', 'mon', 'sat', 'sun', 'thu', 'tue', 'wed']\n"
-            "IMPORTANT: Keep your response concise and focused. Do NOT repeat text or add unnecessary explanations.\n"
-            "Respond with a JSON object in this EXACT format:\n"
+            "AUTOMATION CREATION:\n"
+            "When creating automations, request entities first to know the entity IDs.\n"
+            "For days, use: ['fri', 'mon', 'sat', 'sun', 'thu', 'tue', 'wed']\n\n"
+            "RESPONSE FORMATS - You must ALWAYS respond with valid JSON:\n\n"
+            "For automations:\n"
             "{\n"
             '  "request_type": "automation_suggestion",\n'
             '  "message": "I\'ve created an automation that might help you. Would you like me to create it?",\n'
@@ -922,18 +933,18 @@ class AiAgentHaAgent:
             '    "action": [...]     // Array of actions to perform\n'
             "  }\n"
             "}\n\n"
-            "For dashboard creation requests, use this exact JSON format:\n"
+            "For dashboards (WHEN USER ASKS TO CREATE A DASHBOARD):\n"
             "{\n"
             '  "request_type": "dashboard_suggestion",\n'
-            '  "message": "I\'ve created a dashboard configuration for you. Would you like me to create it?",\n'
+            '  "message": "Description of the dashboard you created",\n'
             '  "dashboard": {\n'
             '    "title": "Dashboard Title",\n'
-            '    "url_path": "dashboard-url-path",\n'
+            '    "url_path": "url-path",\n'
             '    "icon": "mdi:icon-name",\n'
             '    "show_in_sidebar": true,\n'
             '    "views": [{\n'
             '      "title": "View Title",\n'
-            '      "cards": [...] // Array of card configurations\n'
+            '      "cards": [...]\n'
             "    }]\n"
             "  }\n"
             "}\n\n"
@@ -953,11 +964,12 @@ class AiAgentHaAgent:
             '  "target": {"entity_id": ["entity1", "entity2"]},\n'
             '  "service_data": {"brightness": 255}\n'
             "}\n\n"
-            "When you have all the data you need, respond with this exact JSON format:\n"
+            "For answering questions (NOT creating dashboards/automations):\n"
             "{\n"
             '  "request_type": "final_response",\n'
             '  "response": "your answer to the user"\n'
             "}\n\n"
+            "IMPORTANT: Use 'dashboard_suggestion' when creating dashboards, NOT 'final_response'!\n\n"
             "CRITICAL FORMATTING RULES:\n"
             "- You must ALWAYS respond with ONLY a valid JSON object\n"
             "- DO NOT include any text before the JSON\n"
@@ -978,13 +990,15 @@ class AiAgentHaAgent:
             "You can request specific data by using only these commands:\n"
             "- get_entity_state(entity_id): Get state of a specific entity\n"
             "- get_entities_by_domain(domain): Get all entities in a domain\n"
+            "- get_entities_by_device_class(device_class, domain?): Get entities with specific device_class (e.g., 'temperature', 'humidity', 'motion')\n"
+            "- get_climate_related_entities(): Get all climate-related entities (climate.* entities + temperature/humidity sensors)\n"
             "- get_entities_by_area(area_id): Get all entities in a specific area\n"
             "- get_entities(area_id or area_ids): Get entities by area(s) - supports single area_id or list of area_ids\n"
             "  Use as: get_entities(area_ids=['area1', 'area2']) for multiple areas or get_entities(area_id='single_area')\n"
             "- get_calendar_events(entity_id?): Get calendar events\n"
             "- get_automations(): Get all automations\n"
             "- get_weather_data(): Get current weather and forecast data\n"
-            "- get_entity_registry(): Get entity registry entries\n"
+            "- get_entity_registry(): Get entity registry entries (now includes device_class, state_class, unit_of_measurement)\n"
             "- get_device_registry(): Get device registry entries\n"
             "- get_area_registry(): Get room/area information\n"
             "- get_history(entity_id, hours): Get historical state changes\n"
@@ -999,13 +1013,19 @@ class AiAgentHaAgent:
             "- create_automation(automation): Create a new automation with the provided configuration\n"
             "- create_dashboard(dashboard_config): Create a new dashboard with the provided configuration\n"
             "- update_dashboard(dashboard_url, dashboard_config): Update an existing dashboard configuration\n\n"
-            "You can also create dashboards when users ask for them. When creating dashboards:\n"
-            "1. First gather information about available entities, areas, and devices\n"
-            "2. Ask follow-up questions if the user's requirements are unclear\n"
-            "3. Create a dashboard configuration with appropriate cards and views\n"
-            "4. Use common card types like: entities, glance, picture-entity, weather-forecast, thermostat, media-control, etc.\n"
-            "5. Organize cards logically by rooms, device types, or functionality\n"
-            "6. Include relevant entities based on the user's request\n\n"
+            "IMPORTANT DEVICE_CLASS GUIDANCE:\n"
+            "- Many sensors have a 'device_class' attribute (temperature, humidity, motion, etc.)\n"
+            "- Use get_climate_related_entities() for climate dashboards (includes climate.* entities and temperature/humidity sensors)\n"
+            "- Use get_entities_by_device_class(device_class) to filter by device_class (e.g., 'temperature', 'humidity', 'motion')\n"
+            "- For climate dashboards, use history-graph and gauge cards for temperature/humidity sensors\n\n"
+            "DASHBOARD CREATION:\n"
+            "When a user asks to create a dashboard:\n"
+            "1. Gather entities using get_climate_related_entities() or other get_* commands\n"
+            "2. Respond with JSON using request_type: 'dashboard_suggestion' (NEVER use 'final_response'!)\n"
+            "3. Use Lovelace JSON format (NOT YAML!)\n"
+            "4. Example response structure:\n"
+            '{"request_type": "dashboard_suggestion", "message": "Dashboard created", "dashboard": {"title": "...", "views": [...]}}\n'
+            "5. Do NOT include YAML, markdown, or code blocks - only pure JSON\n\n"
             "IMPORTANT AREA/FLOOR GUIDANCE:\n"
             "- When users ask for entities from a specific floor, use get_area_registry() first\n"
             "- Areas have both 'area_id' and 'floor_id' - these are different concepts\n"
@@ -1013,9 +1033,11 @@ class AiAgentHaAgent:
             "- Use get_entities() with area_ids parameter to get entities from multiple areas efficiently\n"
             "- Example: get_entities(area_ids=['area1', 'area2', 'area3']) for multiple areas at once\n"
             "- This is more efficient than calling get_entities_by_area() multiple times\n\n"
-            "You can also create automations when users ask for them. When you detect that a user wants to create an automation, make sure to request first entities so you know the entity IDs to trigger on. Pay attention that if you want to set specific days in the automation you should use those days: ['fri', 'mon', 'sat', 'sun', 'thu', 'tue', 'wed']\n"
-            "IMPORTANT: Keep your response concise and focused. Do NOT repeat text or add unnecessary explanations.\n"
-            "Respond with a JSON object in this EXACT format:\n"
+            "AUTOMATION CREATION:\n"
+            "When creating automations, request entities first to know the entity IDs.\n"
+            "For days, use: ['fri', 'mon', 'sat', 'sun', 'thu', 'tue', 'wed']\n\n"
+            "RESPONSE FORMATS - You must ALWAYS respond with valid JSON:\n\n"
+            "For automations:\n"
             "{\n"
             '  "request_type": "automation_suggestion",\n'
             '  "message": "I\'ve created an automation that might help you. Would you like me to create it?",\n'
@@ -1027,18 +1049,18 @@ class AiAgentHaAgent:
             '    "action": [...]     // Array of actions to perform\n'
             "  }\n"
             "}\n\n"
-            "For dashboard creation requests, use this exact JSON format:\n"
+            "For dashboards (WHEN USER ASKS TO CREATE A DASHBOARD):\n"
             "{\n"
             '  "request_type": "dashboard_suggestion",\n'
-            '  "message": "I\'ve created a dashboard configuration for you. Would you like me to create it?",\n'
+            '  "message": "Description of the dashboard you created",\n'
             '  "dashboard": {\n'
             '    "title": "Dashboard Title",\n'
-            '    "url_path": "dashboard-url-path",\n'
+            '    "url_path": "url-path",\n'
             '    "icon": "mdi:icon-name",\n'
             '    "show_in_sidebar": true,\n'
             '    "views": [{\n'
             '      "title": "View Title",\n'
-            '      "cards": [...] // Array of card configurations\n'
+            '      "cards": [...]\n'
             "    }]\n"
             "  }\n"
             "}\n\n"
@@ -1058,11 +1080,12 @@ class AiAgentHaAgent:
             '  "target": {"entity_id": ["entity1", "entity2"]},\n'
             '  "service_data": {"brightness": 255}\n'
             "}\n\n"
-            "When you have all the data you need, respond with this exact JSON format:\n"
+            "For answering questions (NOT creating dashboards/automations):\n"
             "{\n"
             '  "request_type": "final_response",\n'
             '  "response": "your answer to the user"\n'
             "}\n\n"
+            "IMPORTANT: Use 'dashboard_suggestion' when creating dashboards, NOT 'final_response'!\n\n"
             "CRITICAL FORMATTING RULES:\n"
             "- You must ALWAYS respond with ONLY a valid JSON object\n"
             "- DO NOT include any text before the JSON\n"
@@ -1116,7 +1139,7 @@ class AiAgentHaAgent:
             model = models_config.get("openrouter", "openai/gpt-4o")
             self.ai_client = OpenRouterClient(config.get("openrouter_token"), model)
         elif provider == "anthropic":
-            model = models_config.get("anthropic", "claude-3-5-sonnet-20241022")
+            model = models_config.get("anthropic", "claude-sonnet-4-5-20250929")
             self.ai_client = AnthropicClient(config.get("anthropic_token"), model)
         elif provider == "local":
             model = models_config.get("local", "")
@@ -1226,6 +1249,106 @@ class AiAgentHaAgent:
                 _LOGGER.warning("Entity not found: %s", entity_id)
                 return {"error": f"Entity {entity_id} not found"}
 
+            # Get area information from entity/device registry
+            # Wrapped in try-except to handle cases where registries aren't available (e.g., in tests)
+            area_id = None
+            area_name = None
+
+            try:
+                from homeassistant.helpers import area_registry as ar
+                from homeassistant.helpers import device_registry as dr
+                from homeassistant.helpers import entity_registry as er
+
+                entity_registry = er.async_get(self.hass)
+                device_registry = dr.async_get(self.hass)
+                area_registry = ar.async_get(self.hass)
+
+                if entity_registry and hasattr(entity_registry, "async_get"):
+                    # Try to find the entity in the registry
+                    entity_entry = entity_registry.async_get(entity_id)
+                    if entity_entry:
+                        _LOGGER.debug("Entity %s found in registry", entity_id)
+                        # Check if entity has a direct area assignment
+                        if hasattr(entity_entry, "area_id") and entity_entry.area_id:
+                            area_id = entity_entry.area_id
+                            _LOGGER.debug(
+                                "Entity %s has direct area assignment: %s",
+                                entity_id,
+                                area_id,
+                            )
+                        # Otherwise check if the entity's device has an area
+                        elif (
+                            hasattr(entity_entry, "device_id")
+                            and entity_entry.device_id
+                            and device_registry
+                            and hasattr(device_registry, "async_get")
+                        ):
+                            _LOGGER.debug(
+                                "Entity %s has device_id: %s, checking device area",
+                                entity_id,
+                                entity_entry.device_id,
+                            )
+                            device_entry = device_registry.async_get(
+                                entity_entry.device_id
+                            )
+                            if device_entry:
+                                if (
+                                    hasattr(device_entry, "area_id")
+                                    and device_entry.area_id
+                                ):
+                                    area_id = device_entry.area_id
+                                    _LOGGER.debug(
+                                        "Device %s has area: %s",
+                                        entity_entry.device_id,
+                                        area_id,
+                                    )
+                                else:
+                                    _LOGGER.debug(
+                                        "Device %s has no area assigned",
+                                        entity_entry.device_id,
+                                    )
+                            else:
+                                _LOGGER.debug(
+                                    "Device %s not found in registry",
+                                    entity_entry.device_id,
+                                )
+                        else:
+                            _LOGGER.debug(
+                                "Entity %s has no area_id and no device_id", entity_id
+                            )
+                    else:
+                        _LOGGER.debug(
+                            "Entity %s not found in entity registry", entity_id
+                        )
+                else:
+                    _LOGGER.debug("Entity registry not available for %s", entity_id)
+
+                # Get area name from area_id
+                if (
+                    area_id
+                    and area_registry
+                    and hasattr(area_registry, "async_get_area")
+                ):
+                    area_entry = area_registry.async_get_area(area_id)
+                    if area_entry and hasattr(area_entry, "name"):
+                        area_name = area_entry.name
+                        _LOGGER.debug(
+                            "Resolved area_id %s to area_name: %s", area_id, area_name
+                        )
+                    else:
+                        _LOGGER.debug("Could not resolve area_id %s to name", area_id)
+                elif area_id:
+                    _LOGGER.debug(
+                        "Have area_id %s but area_registry not available", area_id
+                    )
+            except Exception as e:
+                # Registries not available (likely in test environment) - skip area information
+                _LOGGER.warning(
+                    "Exception retrieving area information for %s: %s",
+                    entity_id,
+                    str(e),
+                )
+
             result = {
                 "entity_id": state.entity_id,
                 "state": state.state,
@@ -1233,12 +1356,19 @@ class AiAgentHaAgent:
                     state.last_changed.isoformat() if state.last_changed else None
                 ),
                 "friendly_name": state.attributes.get("friendly_name"),
+                "area_id": area_id,
+                "area_name": area_name,
                 "attributes": {
                     k: (v.isoformat() if hasattr(v, "isoformat") else v)
                     for k, v in state.attributes.items()
                 },
             }
-            _LOGGER.debug("Retrieved entity state: %s", json.dumps(result))
+            _LOGGER.debug(
+                "Retrieved entity state for %s: area_id=%s, area_name=%s",
+                entity_id,
+                area_id,
+                area_name,
+            )
             return result
         except Exception as e:
             _LOGGER.exception("Error getting entity state: %s", str(e))
@@ -1258,6 +1388,105 @@ class AiAgentHaAgent:
         except Exception as e:
             _LOGGER.exception("Error getting entities by domain: %s", str(e))
             return [{"error": f"Error getting entities for domain {domain}: {str(e)}"}]
+
+    async def get_entities_by_device_class(
+        self, device_class: str, domain: str = None
+    ) -> List[Dict[str, Any]]:
+        """Get all entities with a specific device_class.
+
+        Args:
+            device_class: The device class to filter by (e.g., 'temperature', 'humidity', 'motion')
+            domain: Optional domain to restrict search (e.g., 'sensor', 'binary_sensor')
+
+        Returns:
+            List of entity state dictionaries that match the device_class
+        """
+        try:
+            _LOGGER.debug(
+                "Requesting all entities with device_class: %s (domain: %s)",
+                device_class,
+                domain or "all",
+            )
+            matching_entities = []
+
+            for state in self.hass.states.async_all():
+                # Filter by domain if specified
+                if domain and not state.entity_id.startswith(f"{domain}."):
+                    continue
+
+                # Check if this entity has the matching device_class
+                entity_device_class = state.attributes.get("device_class")
+                if entity_device_class == device_class:
+                    matching_entities.append(state.entity_id)
+
+            _LOGGER.debug(
+                "Found %d entities with device_class %s",
+                len(matching_entities),
+                device_class,
+            )
+
+            # Get full state information for each matching entity
+            return [
+                await self.get_entity_state(entity_id)
+                for entity_id in matching_entities
+            ]
+
+        except Exception as e:
+            _LOGGER.exception("Error getting entities by device_class: %s", str(e))
+            return [
+                {
+                    "error": f"Error getting entities with device_class {device_class}: {str(e)}"
+                }
+            ]
+
+    async def get_climate_related_entities(self) -> List[Dict[str, Any]]:
+        """Get all climate-related entities including climate domain and temperature/humidity sensors.
+
+        Returns:
+            List of entity state dictionaries for:
+            - All climate.* entities (thermostats, HVAC systems)
+            - All sensor.* entities with device_class: temperature
+            - All sensor.* entities with device_class: humidity
+        """
+        try:
+            _LOGGER.debug("Requesting all climate-related entities")
+            climate_entities = []
+
+            # Get all climate domain entities (thermostats, HVAC)
+            climate_domain = await self.get_entities_by_domain("climate")
+            climate_entities.extend(climate_domain)
+
+            # Get temperature sensors
+            temp_sensors = await self.get_entities_by_device_class(
+                "temperature", "sensor"
+            )
+            climate_entities.extend(temp_sensors)
+
+            # Get humidity sensors
+            humidity_sensors = await self.get_entities_by_device_class(
+                "humidity", "sensor"
+            )
+            climate_entities.extend(humidity_sensors)
+
+            # Deduplicate by entity_id (edge case: if an entity appears in multiple categories)
+            seen_entity_ids = set()
+            unique_entities = []
+            for entity in climate_entities:
+                entity_id = entity.get("entity_id")
+                if entity_id and entity_id not in seen_entity_ids:
+                    seen_entity_ids.add(entity_id)
+                    unique_entities.append(entity)
+
+            _LOGGER.debug(
+                "Found %d total climate-related entities (deduplicated from %d)",
+                len(unique_entities),
+                len(climate_entities),
+            )
+            return unique_entities
+
+        except Exception as e:
+            _LOGGER.exception("Error getting climate-related entities: %s", str(e))
+            return [{"error": f"Error getting climate-related entities: {str(e)}"}]
 
     async def get_entities_by_area(self, area_id: str) -> List[Dict[str, Any]]:
         """Get all entities for a specific area."""
@@ -1378,26 +1607,67 @@ class AiAgentHaAgent:
             return [{"error": f"Error getting automations: {str(e)}"}]
 
     async def get_entity_registry(self) -> List[Dict]:
-        """Get entity registry entries"""
+        """Get entity registry entries with device_class and other metadata.
+
+        Area information is resolved from the entity or its device.
+        """
         _LOGGER.debug("Requesting all entity registry entries")
         try:
+            from homeassistant.helpers import area_registry as ar
+            from homeassistant.helpers import device_registry as dr
             from homeassistant.helpers import entity_registry as er
 
-            registry = er.async_get(self.hass)
-            if not registry:
+            entity_registry = er.async_get(self.hass)
+            if not entity_registry:
                 return []
-            return [
-                {
-                    "entity_id": entry.entity_id,
-                    "device_id": entry.device_id,
-                    "platform": entry.platform,
-                    "disabled": entry.disabled,
-                    "area_id": entry.area_id,
-                    "original_name": entry.original_name,
-                    "unique_id": entry.unique_id,
-                }
-                for entry in registry.entities.values()
-            ]
+
+            device_registry = dr.async_get(self.hass)
+            area_registry = ar.async_get(self.hass)
+
+            result = []
+            for entry in entity_registry.entities.values():
+                # Get the current state to access device_class and other attributes
+                state = self.hass.states.get(entry.entity_id)
+                device_class = state.attributes.get("device_class") if state else None
+                state_class = state.attributes.get("state_class") if state else None
+                unit_of_measurement = (
+                    state.attributes.get("unit_of_measurement") if state else None
+                )
+
+                # Resolve area_id and area_name
+                # First check entity's direct area assignment
+                area_id = entry.area_id
+                area_name = None
+
+                # If entity doesn't have area, check device's area
+                if not area_id and entry.device_id and device_registry:
+                    device_entry = device_registry.async_get(entry.device_id)
+                    if device_entry and hasattr(device_entry, "area_id"):
+                        area_id = device_entry.area_id
+
+                # Resolve area_name from area_id
+                if area_id and area_registry:
+                    area_entry = area_registry.async_get_area(area_id)
+                    if area_entry and hasattr(area_entry, "name"):
+                        area_name = area_entry.name
+
+                result.append(
+                    {
+                        "entity_id": entry.entity_id,
+                        "device_id": entry.device_id,
+                        "platform": entry.platform,
+                        "disabled": entry.disabled,
+                        "area_id": area_id,
+                        "area_name": area_name,
+                        "original_name": entry.original_name,
+                        "unique_id": entry.unique_id,
+                        "device_class": device_class,
+                        "state_class": state_class,
+                        "unit_of_measurement": unit_of_measurement,
+                    }
+                )
+
+            return result
         except Exception as e:
             _LOGGER.exception("Error getting entity registry entries: %s", str(e))
             return [{"error": f"Error getting entity registry entries: {str(e)}"}]
@@ -2338,7 +2608,7 @@ Then restart Home Assistant to see your new dashboard in the sidebar."""
                 "anthropic": {
                     "token_key": "anthropic_token",
                     "model": models_config.get(
-                        "anthropic", "claude-3-5-sonnet-20241022"
+                        "anthropic", "claude-sonnet-4-5-20250929"
                     ),
                     "client_class": AnthropicClient,
                 },
@@ -2534,6 +2804,8 @@ Then restart Home Assistant to see your new dashboard in the sidebar."""
                         data_request_types = [
                             "get_entity_state",
                             "get_entities_by_domain",
+                            "get_entities_by_device_class",
+                            "get_climate_related_entities",
                             "get_entities_by_area",
                             "get_entities",
                             "get_calendar_events",
@@ -2600,6 +2872,13 @@ Then restart Home Assistant to see your new dashboard in the sidebar."""
                                     area_id=parameters.get("area_id"),
                                     area_ids=parameters.get("area_ids"),
                                 )
+                            elif request_type == "get_entities_by_device_class":
+                                data = await self.get_entities_by_device_class(
+                                    parameters.get("device_class"),
+                                    parameters.get("domain"),
+                                )
+                            elif request_type == "get_climate_related_entities":
+                                data = await self.get_climate_related_entities()
                             elif request_type == "get_calendar_events":
                                 data = await self.get_calendar_events(
                                     parameters.get("entity_id")
@@ -2684,10 +2963,10 @@ Then restart Home Assistant to see your new dashboard in the sidebar."""
                                 json.dumps(data, default=str),
                             )
 
-                            # Add data to conversation as a system message
+                            # Add data to conversation as a user message (not system to avoid overwriting system prompt in Anthropic API)
                             self.conversation_history.append(
                                 {
-                                    "role": "system",
+                                    "role": "user",
                                     "content": json.dumps({"data": data}, default=str),
                                 }
                             )
@@ -2800,10 +3079,10 @@ Then restart Home Assistant to see your new dashboard in the sidebar."""
                                 len(data) if isinstance(data, list) else 1,
                             )
 
-                            # Add data to conversation as a system message
+                            # Add data to conversation as a user message (not system to avoid overwriting system prompt in Anthropic API)
                             self.conversation_history.append(
                                 {
-                                    "role": "system",
+                                    "role": "user",
                                     "content": json.dumps({"data": data}, default=str),
                                 }
                             )
@@ -2941,10 +3220,10 @@ Then restart Home Assistant to see your new dashboard in the sidebar."""
                                 json.dumps(data, default=str),
                             )
 
-                            # Add data to conversation as a system message
+                            # Add data to conversation as a user message (not system to avoid overwriting system prompt in Anthropic API)
                             self.conversation_history.append(
                                 {
-                                    "role": "system",
+                                    "role": "user",
                                     "content": json.dumps({"data": data}, default=str),
                                 }
                             )
