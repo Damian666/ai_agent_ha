@@ -468,7 +468,9 @@ class LocalClient(BaseAIClient):
 class LlamaClient(BaseAIClient):
     """Client for Llama API."""
 
-    def __init__(self, token: str, model: str = "Llama-4-Maverick-17B-128E-Instruct-FP8"):
+    def __init__(
+        self, token: str, model: str = "Llama-4-Maverick-17B-128E-Instruct-FP8"
+    ):
         """Initialize the Llama client.
 
         Args:
@@ -658,35 +660,309 @@ class LMStudioClient(BaseAIClient):
         # If user provided base ending with /v1, default to chat completions
         if u_lower.endswith("/v1"):
             self.api_url = f"{u}/chat/completions"
-        elif u_lower.endswith("/chat/completions") or u_lower.endswith("/responses") or u_lower.endswith("/completions"):
+        elif (
+            u_lower.endswith("/chat/completions")
+            or u_lower.endswith("/responses")
+            or u_lower.endswith("/completions")
+        ):
             self.api_url = u
         else:
             # Fallback: assume base, append chat completions
             self.api_url = f"{u}/v1/chat/completions"
         self.model = model
 
+    async def _check_model_status(self) -> Dict[str, Any]:
+        """Check model status using LM Studio API.
+
+        Returns:
+            Dict containing model status information.
+        """
+        # Try to deduce base URL for LM Studio specific API
+        # self.api_url is usually .../v1/chat/completions
+        if "/v1" in self.api_url:
+            base_url = self.api_url.split("/v1")[0]
+        else:
+            base_url = self.api_url.split("/chat")[0]
+
+        # Try v1 first (newer versions)
+        url_v1 = f"{base_url}/api/v1/models"
+        # Fallback to v0
+        url_v0 = f"{base_url}/api/v0/models"
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Try v1 first
+                try:
+                    async with session.get(
+                        url_v1, timeout=aiohttp.ClientTimeout(total=5)
+                    ) as resp:
+                        if resp.status == 200:
+                            return await resp.json()
+                except Exception:
+                    pass
+
+                # Fallback to v0
+                async with session.get(
+                    url_v0, timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    if resp.status == 200:
+                        return await resp.json()
+        except Exception:
+            # API might not be available or different version
+            pass
+        return {}
+
+    async def _wait_for_model_loading(self) -> None:
+        """Wait if the model is currently loading."""
+        # Check up to 10 times with 2 second delay
+        for _ in range(10):
+            status = await self._check_model_status()
+            if not status:
+                return
+
+            # Check if our model is loading
+            # The structure of /api/v0/models response depends on LM Studio version
+            # Usually it returns a list of models
+
+            # If we can't parse it easily, just return
+            if not isinstance(status, list) and not isinstance(status, dict):
+                return
+
+            # Handle dict response (some versions return {"data": [...]})
+            models_list = status
+            if isinstance(status, dict):
+                if "data" in status:
+                    models_list = status["data"]
+                else:
+                    # Unknown dict format
+                    return
+
+            if not isinstance(models_list, list):
+                return
+
+            # Look for our model
+            model_loading = False
+            for m in models_list:
+                # Check if this is our model
+                # m might have 'id', 'path', 'isLoaded', 'isLoading' etc.
+                if isinstance(m, dict) and self.model in m.get("id", ""):
+                    if m.get("isLoading", False) or m.get("state") == "loading":
+                        model_loading = True
+                        _LOGGER.info(
+                            "Model %s is currently loading, waiting...", self.model
+                        )
+                        break
+
+            if not model_loading:
+                return
+
+            await asyncio.sleep(2)
+
+    async def _parse_sse_stream(self, response):
+        """Parse Server-Sent Events stream from LM Studio API.
+
+        Yields:
+            Dict with 'type' and 'data' keys for each event.
+        """
+        event_type = None
+        data_lines = []
+
+        async for line_bytes in response.content:
+            line = line_bytes.decode("utf-8").rstrip("\n\r")
+
+            if line.startswith("event: "):
+                event_type = line[7:].strip()
+            elif line.startswith("data: "):
+                data_lines.append(line[6:])
+            elif line == "":
+                # Empty line signals end of event
+                if event_type and data_lines:
+                    try:
+                        # Join multi-line data and parse JSON
+                        data_str = "\n".join(data_lines)
+                        data = json.loads(data_str)
+                        yield {"type": event_type, "data": data}
+                    except json.JSONDecodeError as e:
+                        _LOGGER.warning("Failed to parse SSE data: %s", e)
+                    event_type = None
+                    data_lines = []
+
+    async def _handle_model_loading(self, event_stream):
+        """Monitor and wait for model loading, yielding other events.
+
+        Args:
+            event_stream: Async generator of SSE events.
+
+        Yields:
+            Events that are not model loading events.
+        """
+        model_loading = False
+
+        async for event in event_stream:
+            event_type = event.get("type")
+            event_data = event.get("data", {})
+
+            if event_type == "model_load.start":
+                model_loading = True
+                model_id = event_data.get("model_instance_id", "unknown")
+                _LOGGER.info("🔄 Model loading started: %s", model_id)
+
+            elif event_type == "model_load.progress":
+                progress = event_data.get("progress", 0)
+                _LOGGER.info("📊 Model loading progress: %.0f%%", progress * 100)
+
+            elif event_type == "model_load.end":
+                load_time = event_data.get("load_time_seconds", 0)
+                _LOGGER.info("✅ Model loaded successfully in %.2f seconds", load_time)
+                model_loading = False
+
+            else:
+                # Pass through non-loading events
+                yield event
+
     async def get_response(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
-        """Get response from LM Studio API.
+        """Get response from LM Studio API using streaming.
 
         Args:
             messages: List of message dictionaries.
             **kwargs: Additional arguments.
 
         Returns:
-            The response text.
+            The response text in agent's JSON format.
         """
+        from .tool_definitions import TOOLS
+
+        # Wait for model if it's loading
+        await self._wait_for_model_loading()
+
         headers = {"Content-Type": "application/json"}
 
         # LM Studio (OpenAI-compatible) requires a model parameter
         if not self.model:
             raise Exception("Missing LM Studio model configuration")
 
+        # Translate messages to OpenAI tool format
+        openai_messages = []
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            role = msg.get("role")
+            content = msg.get("content", "")
+
+            if i == 0 and role == "system":
+                # Replace the complex JSON-instruction system prompt with a simple one
+                # The tools definitions will provide the necessary context
+                openai_messages.append(
+                    {
+                        "role": "system",
+                        "content": "You are an AI assistant integrated with Home Assistant. Use the available tools to control devices and retrieve information. When you receive tool results, always provide a natural language response to the user explaining what you found or did.",
+                    }
+                )
+                i += 1
+                continue
+
+            if role == "assistant":
+                # Check if it's a JSON command that needs to be converted to a tool call
+                try:
+                    # Heuristic to check if it's a JSON command
+                    if content.strip().startswith("{") and '"request_type"' in content:
+                        data = json.loads(content)
+                        request_type = data.get("request_type")
+
+                        # These are final responses, keep as content
+                        if request_type in [
+                            "final_response",
+                            "automation_suggestion",
+                            "dashboard_suggestion",
+                        ]:
+                            openai_messages.append(msg)
+                        else:
+                            # It's a tool call
+                            # Generate a tool call ID
+                            call_id = f"call_{len(openai_messages)}"
+
+                            # Extract function name and args
+                            if request_type == "data_request":
+                                func_name = data.get("request")
+                            else:
+                                func_name = request_type
+
+                            params = data.get("parameters", {})
+
+                            tool_call = {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": func_name,
+                                    "arguments": json.dumps(params),
+                                },
+                            }
+
+                            openai_messages.append(
+                                {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [tool_call],
+                                }
+                            )
+
+                            # Check if next message is a tool result
+                            if i + 1 < len(messages):
+                                next_msg = messages[i + 1]
+                                next_content = next_msg.get("content", "")
+                                if next_msg.get("role") == "system" and (
+                                    "TOOL RESULT" in next_content
+                                    or '"data":' in next_content
+                                ):
+                                    # This is the result
+                                    # Extract the JSON data
+                                    result_content = next_content
+                                    # Try to clean it up if it has "TOOL RESULT: " prefix
+                                    if "TOOL RESULT: " in result_content:
+                                        result_content = result_content.replace(
+                                            "TOOL RESULT: ", ""
+                                        )
+
+                                    # Further cleanup to ensure it's just the data
+                                    # The agent wraps data in {"data": ...} or similar
+                                    # We'll pass it as is, the model should handle it
+
+                                    openai_messages.append(
+                                        {
+                                            "role": "tool",
+                                            "tool_call_id": call_id,
+                                            "content": result_content,
+                                        }
+                                    )
+                                    i += 1  # Skip next message since we consumed it
+                    else:
+                        openai_messages.append(msg)
+                except json.JSONDecodeError:
+                    openai_messages.append(msg)
+            else:
+                openai_messages.append(msg)
+
+            i += 1
+
+        # Build payload with streaming enabled
         payload = {
-            "messages": messages,
+            "messages": openai_messages,
             "model": self.model,
+            "temperature": kwargs.get("temperature", 0.7),
+            "top_p": kwargs.get("top_p", 0.9),
+            "max_tokens": kwargs.get("max_tokens", 2048),
+            "stream": True,  # Enable streaming
+            "tools": TOOLS,
+            "tool_choice": "auto",
         }
 
-        _LOGGER.debug("LM Studio request to %s with model: %s", self.api_url, self.model)
+        _LOGGER.debug(
+            "LM Studio streaming request to %s with model: %s", self.api_url, self.model
+        )
+        # Log payload without tools to avoid spam
+        payload_log = payload.copy()
+        payload_log["tools"] = f"<{len(TOOLS)} tools>"
+        _LOGGER.debug("LM Studio payload: %s", json.dumps(payload_log, indent=2))
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -695,30 +971,114 @@ class LMStudioClient(BaseAIClient):
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=300),
             ) as resp:
-                response_text = await resp.text()
                 if resp.status != 200:
-                    raise Exception(f"LM Studio API error {resp.status}: {response_text}")
-                try:
-                    data = json.loads(response_text)
-                except json.JSONDecodeError:
-                    return response_text
+                    error_text = await resp.text()
+                    raise Exception(f"LM Studio API error {resp.status}: {error_text}")
 
-                _LOGGER.debug("LM Studio response: %s", json.dumps(data, indent=2))
+                # Parse SSE stream and handle model loading
+                sse_stream = self._parse_sse_stream(resp)
+                event_stream = self._handle_model_loading(sse_stream)
 
-                choices = data.get("choices", [])
-                if choices:
-                    msg = choices[0].get("message", {})
-                    content = msg.get("content")
-                    if content is not None:
-                        if not content:
-                            _LOGGER.warning("LM Studio returned empty content. Full response: %s", data)
-                        return content
-                _LOGGER.warning("LM Studio response has no choices. Full response: %s", data)
-                return str(data)
+                # Aggregate streaming response
+                reasoning_parts = []
+                message_parts = []
+                tool_calls_data = []
+                final_result = None
+
+                async for event in event_stream:
+                    event_type = event.get("type")
+                    event_data = event.get("data", {})
+
+                    if event_type == "reasoning.delta":
+                        reasoning_parts.append(event_data.get("content", ""))
+
+                    elif event_type == "message.delta":
+                        message_parts.append(event_data.get("content", ""))
+
+                    elif event_type == "tool_call.success":
+                        # Collect tool call information
+                        tool_calls_data.append(
+                            {
+                                "tool": event_data.get("tool"),
+                                "arguments": event_data.get("arguments", {}),
+                                "output": event_data.get("output", ""),
+                            }
+                        )
+
+                    elif event_type == "chat.end":
+                        # Store final aggregated result
+                        final_result = event_data.get("result", {})
+
+                    elif event_type == "error":
+                        error_info = event_data.get("error", {})
+                        _LOGGER.error(
+                            "LM Studio streaming error: %s", error_info.get("message")
+                        )
+
+                # Process the aggregated response
+                if tool_calls_data:
+                    # Return first tool call in agent's format
+                    tool_call = tool_calls_data[0]
+                    response_obj = {
+                        "request_type": tool_call["tool"],
+                        "parameters": tool_call["arguments"],
+                    }
+                    return json.dumps(response_obj)
+
+                # Combine message content
+                message_content = "".join(message_parts).strip()
+
+                if message_content:
+                    # Check if it's already JSON
+                    if message_content.startswith("{") and message_content.endswith(
+                        "}"
+                    ):
+                        try:
+                            # Validate it's proper JSON
+                            json.loads(message_content)
+                            return message_content
+                        except json.JSONDecodeError:
+                            pass
+
+                    # Wrap plain text in final_response
+                    return json.dumps(
+                        {"request_type": "final_response", "response": message_content}
+                    )
+
+                # Fallback to chat.end result if available
+                if final_result:
+                    output = final_result.get("output", [])
+                    for item in output:
+                        if item.get("type") == "message":
+                            content = item.get("content", "")
+                            if content:
+                                return json.dumps(
+                                    {
+                                        "request_type": "final_response",
+                                        "response": content,
+                                    }
+                                )
+                        elif item.get("type") == "tool_call":
+                            return json.dumps(
+                                {
+                                    "request_type": item.get("tool"),
+                                    "parameters": item.get("arguments", {}),
+                                }
+                            )
+
+                # Handle empty response
+                _LOGGER.warning("LM Studio returned empty streaming response")
+                return json.dumps(
+                    {
+                        "request_type": "final_response",
+                        "response": "I processed your request but I'm having trouble formulating a response. Could you please rephrase your question?",
+                    }
+                )
 
 
 class GeminiClient(BaseAIClient):
     """Client for Google Gemini API."""
+
     def __init__(self, token: str, model: str = "gemini-2.5-flash"):
         """Initialize the Gemini client.
 
@@ -1252,7 +1612,9 @@ class AiAgentHaAgent:
             url = config.get("lmstudio_url")
             if not url:
                 _LOGGER.error("Missing lmstudio_url for lmstudio provider")
-                raise Exception("Missing lmstudio_url configuration for lmstudio provider")
+                raise Exception(
+                    "Missing lmstudio_url configuration for lmstudio provider"
+                )
             if not model:
                 _LOGGER.error("Missing model for lmstudio provider")
                 raise Exception("Missing model configuration for lmstudio provider")
@@ -2806,11 +3168,27 @@ Then restart Home Assistant to see your new dashboard in the sidebar."""
                                 json.dumps(data, default=str),
                             )
 
-                            # Add data to conversation as a system message
+                            # Add data to conversation as a system message with explicit instruction
+                            # For local/lmstudio models, add explicit instruction to help them understand
+                            # what to do with the data
+                            selected_provider = self.config.get("ai_provider", "openai")
+                            if selected_provider in ("local", "lmstudio"):
+                                data_message = (
+                                    f"TOOL RESULT: {json.dumps({'data': data}, default=str)}\n\n"
+                                    "IMPORTANT: You must now respond with a final_response to answer the user's original question.\n"
+                                    "Use the data above to formulate your answer.\n"
+                                    "Your response MUST be in this exact format:\n"
+                                    '{"request_type": "final_response", "response": "<your natural language answer here>"}\n\n'
+                                    "Example: If the user asked about weather and you received temperature data, respond with:\n"
+                                    '{"request_type": "final_response", "response": "The current temperature is 72°F with partly cloudy skies."}'
+                                )
+                            else:
+                                data_message = json.dumps({"data": data}, default=str)
+
                             self.conversation_history.append(
                                 {
                                     "role": "system",
-                                    "content": json.dumps({"data": data}, default=str),
+                                    "content": data_message,
                                 }
                             )
                             continue
