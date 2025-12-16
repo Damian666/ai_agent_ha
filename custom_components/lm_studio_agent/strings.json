@@ -1,0 +1,34 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Configure LM Studio",
+                "description": "Enter the URL for your LM Studio instance (e.g., http://localhost:1234/v1).",
+                "data": {
+                    "lm_studio_url": "LM Studio URL"
+                },
+                "data_description": {
+                    "lm_studio_url": "The full URL to the LM Studio API endpoint."
+                }
+            }
+        },
+        "error": {
+            "cannot_connect": "Failed to connect to LM Studio. Please check the URL and ensure LM Studio is running.",
+            "unknown": "Unknown error occurred"
+        },
+        "abort": {
+            "already_configured": "LM Studio Agent is already configured"
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "LM Studio Settings",
+                "description": "Update your LM Studio configuration.",
+                "data": {
+                    "lm_studio_url": "LM Studio URL"
+                }
+            }
+        }
+    }
+}

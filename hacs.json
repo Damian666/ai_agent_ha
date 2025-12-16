@@ -1,6 +1,6 @@
 {
-  "name": "AI Agent HA",
+  "name": "LM Studio Agent",
   "render_readme": true,
-  "country": "US",
+  "country": "NL",
   "homeassistant": "2024.1.0"
 }

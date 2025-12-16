@@ -1,0 +1,8 @@
+panel_custom:
+  - name: LM Studio Agent
+    sidebar_title: LM Studio Agent
+    sidebar_icon: mdi:robot
+    url_path: lm_studio_agent
+    module_url: /local/lm_studio_agent/frontend/lm_studio_agent-panel.js
+    trust_external: true
+    require_admin: false 

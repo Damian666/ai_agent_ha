@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+Added to sys.path: S:\PycharmProjects\ai_agent_ha
+Mocking dependencies...
+Attempting import...
+IMPORT ERROR: No module named 'homeassistant.components'; 'homeassistant' is not a package
+  File "S:\PycharmProjects\ai_agent_ha\tests\test_lm_studio_agent\debug_test.py", line 37, in debug_import
+    from custom_components.lm_studio_agent.agent import LMStudioClient
+  File "S:\PycharmProjects\ai_agent_ha\custom_components\lm_studio_agent\__init__.py", line 8, in <module>
+    from homeassistant.components.frontend import async_register_built_in_panel
+ModuleNotFoundError: No module named 'homeassistant.components'; 'homeassistant' is not a package

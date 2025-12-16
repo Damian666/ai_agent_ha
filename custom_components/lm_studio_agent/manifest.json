@@ -1,6 +1,6 @@
 {
-    "domain": "ai_agent_ha",
-    "name": "AI Agent HA",
+    "domain": "lm_studio_agent",
+    "name": "LM Studio Agent",
     "after_dependencies": [
         "history",
         "recorder",

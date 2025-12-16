@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "S:\PycharmProjects\ai_agent_ha\tests\test_lm_studio_agent\debug_test.py", line 45, in debug_import
+    from custom_components.lm_studio_agent.agent import LMStudioClient
+  File "S:\PycharmProjects\ai_agent_ha\custom_components\lm_studio_agent\__init__.py", line 10, in <module>
+    from homeassistant.config_entries import ConfigEntry
+ModuleNotFoundError: No module named 'homeassistant.config_entries'; 'homeassistant' is not a package
+Added to sys.path: S:\PycharmProjects\ai_agent_ha
+Mocking dependencies...
+Attempting import...
+IMPORT ERROR: No module named 'homeassistant.config_entries'; 'homeassistant' is not a package

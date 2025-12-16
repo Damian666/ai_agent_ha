@@ -4,7 +4,7 @@ import {
   css,
 } from "https://unpkg.com/lit-element@2.4.0/lit-element.js?module";
 
-console.log("AI Agent HA Panel loading..."); // Debug log
+console.log("LM Studio Agent Panel loading..."); // Debug log
 
 const PROVIDERS = {
   openai: "OpenAI",
@@ -16,7 +16,7 @@ const PROVIDERS = {
   local: "Local Model",
 };
 
-class AiAgentHaPanel extends LitElement {
+class LMStudioAgentPanel extends LitElement {
   static get properties() {
     return {
       hass: { type: Object, reflect: false, attribute: false },
@@ -567,7 +567,7 @@ class AiAgentHaPanel extends LitElement {
     this.providersLoaded = false;
     this._eventSubscriptionSetup = false;
     this._serviceCallTimeout = null;
-    console.debug("AI Agent HA Panel constructor called");
+    console.debug("LM Studio Agent Panel constructor called");
   }
 
   _getRandomPrompts() {
@@ -578,12 +578,12 @@ class AiAgentHaPanel extends LitElement {
 
   async connectedCallback() {
     super.connectedCallback();
-    console.debug("AI Agent HA Panel connected");
+    console.debug("LM Studio Agent Panel connected");
     if (this.hass && !this._eventSubscriptionSetup) {
       this._eventSubscriptionSetup = true;
       this.hass.connection.subscribeEvents(
         (event) => this._handleLlamaResponse(event),
-        'ai_agent_ha_response'
+        'lm_studio_agent_response'
       );
       console.debug("Event subscription set up in connectedCallback()");
       // Load prompt history from Home Assistant storage
@@ -606,7 +606,7 @@ class AiAgentHaPanel extends LitElement {
       this._eventSubscriptionSetup = true;
       this.hass.connection.subscribeEvents(
         (event) => this._handleLlamaResponse(event),
-        'ai_agent_ha_response'
+        'lm_studio_agent_response'
       );
       console.debug("Event subscription set up in updated()");
     }
@@ -620,7 +620,7 @@ class AiAgentHaPanel extends LitElement {
         const allEntries = await this.hass.callWS({ type: 'config_entries/get' });
 
         const aiAgentEntries = allEntries.filter(
-          entry => entry.domain === 'ai_agent_ha'
+          entry => entry.domain === 'lm_studio_agent'
         );
 
         if (aiAgentEntries.length > 0) {
@@ -634,13 +634,13 @@ class AiAgentHaPanel extends LitElement {
             } else {
               // Fallback to title mapping
               const titleToProviderMap = {
-                "AI Agent HA (OpenRouter)": "openrouter",
+                "LM Studio Agent (Local)": "local",
                 "AI Agent HA (Google Gemini)": "gemini",
                 "AI Agent HA (OpenAI)": "openai",
                 "AI Agent HA (Llama)": "llama",
                 "AI Agent HA (Anthropic (Claude))": "anthropic",
                 "AI Agent HA (Alter)": "alter",
-                "AI Agent HA (Local Model)": "local",
+                "LM Studio Agent (Local Model)": "local",
               };
               provider = titleToProviderMap[entry.title] || "unknown";
             }
@@ -657,7 +657,7 @@ class AiAgentHaPanel extends LitElement {
             this._selectedProvider = this._availableProviders[0].value;
           }
         } else {
-          console.debug("No 'ai_agent_ha' config entries found via WebSocket.");
+          console.debug("No 'lm_studio_agent' config entries found via WebSocket.");
           this._availableProviders = [];
         }
       } catch (error) {
@@ -793,7 +793,7 @@ class AiAgentHaPanel extends LitElement {
 
     console.debug('Loading prompt history...');
     try {
-      const result = await this.hass.callService('ai_agent_ha', 'load_prompt_history', {
+      const result = await this.hass.callService('lm_studio_agent', 'load_prompt_history', {
         provider: this._selectedProvider
       });
       console.debug('Prompt history service result:', result);
